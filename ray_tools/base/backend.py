@@ -156,9 +156,6 @@ class RayBackendLocalRayUI(LocalBackendBase):
     def _exec_once(self, rml_path: str, exported_planes: list[str], run_dir: str) -> int:
         env = self._merged_env()
         workdir = os.path.dirname(rml_path)
-        print(workdir)
-        print(os.getcwd())
-
 
         # Use list form, not shell=True
         proc = subprocess.Popen(
