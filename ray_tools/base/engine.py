@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import abc
 import torch
+import numpy as np
+from ray_tools.base.rml.transform import apply_rigid_transform
 from collections.abc import Iterable 
 from collections import OrderedDict
 
@@ -120,46 +122,239 @@ class RayEngine(Engine):
                   transform: RayTransformType | None = None,
                   ) -> dict:
         """
-        This method performs the actual simulation run.
+        Run simulation using parameters tensor and apply_rigid_transform to update
+        worldPosition/world*direction in the XmlElement template (no apply_parameters call).
         """
         result = {'param_container': dict(), 'ray_output': None}
 
         # create a copy of RML template to avoid problems with multi-threading
         raypyng_rml_work, template_work = self._get_thread_rml()
 
-        # write values in param_container to RML template and param_container
-        for i, (key) in enumerate(self.param_list):
-            if key not in self.manual_transform_xyz:
-                value = parameters[i].item()
-                element = self._key_to_element(key, template=template_work)
-                element.cdata = str(value)
-                result['param_container'][key] = value
+        # --- Helpers for XmlElement usage ------------------------------------------------
+        def find_beamline(root_elem):
+            # Case 1: root itself IS the beamline
+            if root_elem.name() == 'beamline':
+                return root_elem
 
-        # call the backend to perform the run
+            # Case 2: beamline is a child
+            b_elems = root_elem.get_elements('beamline')
+            return b_elems[0] if b_elems else None
+
+        def find_objects(beam_elem):
+            # returns list of object XmlElement children
+            return [o for o in beam_elem.get_elements('object')]
+
+        def find_param(obj_elem, param_id):
+            # find first param child whose attribute 'id' equals param_id
+            for p in obj_elem.get_elements('param'):
+                if p.get_attribute('id') == param_id:
+                    return p
+            return None
+
+        def parse_vec_xml(param_elem):
+            """
+            Read a vector from:
+              <param>
+                <x>...</x>
+                <y>...</y>
+                <z>...</z>
+              </param>
+            """
+            if param_elem is None:
+                raise ValueError("param_elem is None")
+
+            def get_val(axis):
+                try:
+                    node = getattr(param_elem, axis)
+                    txt = node.cdata.strip()
+                    return float(txt) if txt else 0.0
+                except AttributeError:
+                    # missing axis -> default 0
+                    return 0.0
+
+            x = get_val('x')
+            y = get_val('y')
+            z = get_val('z')
+            return (x, y, z)
+
+        def write_vec_xml(param_elem, vec):
+            """
+            Write a vector into:
+              <param>
+                <x>...</x>
+                <y>...</y>
+                <z>...</z>
+              </param>
+            """
+            if param_elem is None:
+                return
+
+            x_val, y_val, z_val = float(vec[0]), float(vec[1]), float(vec[2])
+
+            # Helper: ensure axis child exists
+            def set_axis(axis, value):
+                try:
+                    node = getattr(param_elem, axis)
+                except AttributeError:
+                    # create missing axis element
+                    node = XmlElement(axis, attributes={}, parent=param_elem)
+                    param_elem.add_child(node)
+                node.cdata = f"{value:.16g}"
+
+            set_axis('x', x_val)
+            set_axis('y', y_val)
+            set_axis('z', z_val)
+
+
+        # --- Access beamline and objects -------------------------------------------------
+        # template_work can be XmlElement root or ElementTree-like. Try to get root if needed.
+        root_elem = template_work.getroot() if hasattr(template_work, 'getroot') else template_work
+        beam = find_beamline(root_elem)
+        #print("Beamline:", beam)
+        #print("Objects:", [o.get_attribute('name') for o in beam.get_elements('object')])
+
+        if beam is None:
+            raise ValueError("No beamline element found in template_work")
+            return result
+
+        objects_list = find_objects(beam)
+        # map name -> XmlElement object
+        objects = {}
+        for obj in objects_list:
+            # object name is stored as attribute 'name'
+            name = obj.get_attribute('name')
+            if name:
+                objects[name] = obj
+
+        # --- Build index -> (component, property) mapping -------------------------------
+        index_to_comp_prop = {}
+        for i, key in enumerate(self.param_list):
+            if isinstance(key, (list, tuple)) and len(key) == 2:
+                comp, prop = key
+            else:
+                if isinstance(key, str) and '.' in key:
+                    comp, prop = key.split('.', 1)
+                else:
+                    comp, prop = (key, '')
+            index_to_comp_prop[i] = (comp, prop)
+
+        # --- Error detection & canonicalization helpers --------------------------------
+        def is_error_property(prop_name: str) -> bool:
+            if not prop_name:
+                return False
+            return prop_name.endswith('error')
+
+        # --- Read baseline pos/dirs from XML for objects that have worldPosition/worldXdirection ---
+        baseline = {}
+        for name, obj in objects.items():
+            wp = find_param(obj, 'worldPosition')
+            dx = find_param(obj, 'worldXdirection')
+            dy = find_param(obj, 'worldYdirection')
+            dz = find_param(obj, 'worldZdirection')
+            if wp is None or dx is None:
+                raise ValueError(f"Missing worldPosition or worldXdirection for {name}; skipping baseline for it.")
+                continue
+            try:
+                pos = parse_vec_xml(wp)
+            except Exception:
+                raise ValueError(f"Failed to parse worldPosition for {name}; skipping.")
+                continue
+            # parse directions with fallbacks
+            dirs = []
+            for d, fallback in ((dx, (1.0, 0.0, 0.0)), (dy, (0.0, 1.0, 0.0)), (dz, (0.0, 0.0, 1.0))):
+                if d is not None:
+                    try:
+                        dirs.append(parse_vec_xml(d))
+                    except Exception:
+                        raise ValueError(f"Failed to parse direction param for {name}; using fallback.")
+                        dirs.append(fallback)
+                else:
+                    dirs.append(fallback)
+            baseline[name] = {'pos': tuple(pos), 'dirs': tuple(dirs)}
+
+        # --- Write scalar (non-error) params into XML and fill param_container -----------
+        for idx, (comp, prop) in index_to_comp_prop.items():
+            val = parameters[idx].item()
+            # store in result container under a canonical key
+            keyname = f"{comp}.{prop}" if prop else comp
+            result['param_container'][keyname] = val
+
+            if prop and not is_error_property(prop):
+                obj = objects.get(comp)
+                if obj is None:
+                    # component not in XML; skip silently
+                    continue
+                node = find_param(obj, prop)
+                if node is None:
+                    raise ValueError(f"Parameter {prop} not found for component {comp}")
+                    continue
+                # write value as cdata; keep int-like floats as ints
+                if isinstance(val, float) and float(val).is_integer():
+                    node.cdata = str(int(val))
+                else:
+                    node.cdata = str(val)
+                #if self.verbose:
+                #    print(f"Set {comp}.{prop} = {node.cdata}")
+
+        # --- For each baseline object: collect error params from tensor and apply rigid transform
+        for comp, base in baseline.items():
+            # Collect errors for this component
+            errs = {}
+            for idx, (c, prop) in index_to_comp_prop.items():
+                if c != comp:
+                    continue
+                if not prop:
+                    continue
+                if not is_error_property(prop):
+                    continue
+                val = float(parameters[idx].item())
+                key = prop
+                errs[key] = val
+
+            # skip if no meaningful errors
+            if not any(abs(v) > 1e-15 for v in errs.values()):
+                continue
+
+            base_pos = np.array(base['pos'], dtype=float)         # shape (3,)
+            base_dirs = np.vstack(base['dirs']).astype(float)     # shape (3,3) - rows X,Y,Z
+
+            try:
+                new_pos_arr, new_dirs_arr = apply_rigid_transform(base_pos, base_dirs, errs)
+                #print("out", base_pos==new_pos_arr, base_dirs==new_dirs_arr)
+            except Exception:
+                print(f"apply_rigid_transform failed for component {comp} with errs={errs}")
+                continue
+
+            # Convert to plain python tuples
+            new_pos = tuple(float(x) for x in new_pos_arr.tolist())
+            # assume new_dirs_arr shape (3,3) rows correspond to X,Y,Z directions
+            new_dirs = tuple(tuple(float(x) for x in row.tolist()) for row in new_dirs_arr)
+
+            # write back into XML
+            obj = objects.get(comp)
+            if obj is None:
+                continue
+            wp_elem = find_param(obj, 'worldPosition')
+            if wp_elem is not None:
+                write_vec_xml(wp_elem, new_pos)
+            for i, pid in enumerate(['worldXdirection', 'worldYdirection', 'worldZdirection']):
+                elem = find_param(obj, pid)
+                if elem is not None and i < len(new_dirs):
+                    write_vec_xml(elem, new_dirs[i])
+            #if self.verbose:
+            #    print(f"{comp}: errs={errs} -> pos={new_pos}, dirs={new_dirs}")
+
+        # --- Call the backend using the mutated XML template -----------------------------
         ray_output_all_planes = self.ray_backend.run(raypyng_rml=raypyng_rml_work,
                                                     exported_planes=self.exported_planes)
-        for key, ray_output in ray_output_all_planes.items():
-            if key == self.manual_transform_plane:
-                # compute x and y direction for normalized z direction (zz_dir would be 1)
-                xz_dir = ray_output.x_dir / ray_output.z_dir
-                yz_dir = ray_output.y_dir / ray_output.z_dir
-                idx = torch.tensor(self.indices, device=parameters.device)
-                trans_x, trans_y, trans_z = parameters[idx]
-
-                x_cur = ray_output.x_loc + xz_dir * trans_z + trans_x
-                y_cur = ray_output.y_loc + yz_dir * trans_z + trans_y
-                z_cur = ray_output.z_loc + trans_z
-
-                ray_output_all_planes[key].x_loc = x_cur
-                ray_output_all_planes[key].y_loc = y_cur
-                ray_output_all_planes[key].z_loc = z_cur
-
         result['ray_output'] = ray_output_all_planes
-        # apply transform (to each exported plane)
+
+        # apply optional transform to each exported plane
         if transform is not None:
             for plane in self.exported_planes:
                 t = transform if isinstance(transform, RayTransform) else transform[plane]
                 result['ray_output'][plane] = t(result['ray_output'][plane])
+
         return result
 
     def _key_to_element(self, key: str, template: XmlElement | None = None) -> XmlElement:
