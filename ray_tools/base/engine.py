@@ -278,8 +278,7 @@ class RayEngine(Engine):
             # store in result container under a canonical key
             keyname = f"{comp}.{prop}" if prop else comp
             result['param_container'][keyname] = val
-
-            if prop and not is_error_property(prop):
+            if prop and comp not in self.manual_transform_plane:
                 obj = objects.get(comp)
                 if obj is None:
                     # component not in XML; skip silently
@@ -293,8 +292,6 @@ class RayEngine(Engine):
                     node.cdata = str(int(val))
                 else:
                     node.cdata = str(val)
-                #if self.verbose:
-                #    print(f"Set {comp}.{prop} = {node.cdata}")
 
         # --- For each baseline object: collect error params from tensor and apply rigid transform
         for comp, base in baseline.items():
