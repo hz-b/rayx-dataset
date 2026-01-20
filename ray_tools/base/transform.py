@@ -6,7 +6,7 @@ from typing import Any
 
 import torch
 
-from . import RayOutput
+from .backend import RayOutput
 
 
 class RayTransform(metaclass=ABCMeta):
@@ -89,12 +89,15 @@ class Crop(RayTransform):
     """
 
     def __init__(self,
-                 x_lims: tuple[float, float] = None,
-                 y_lims: tuple[float, float] = None,
-                 z_lims: tuple[float, float] = None):
-        self.x_lims = x_lims if x_lims else (-float('inf'), float('inf'))
-        self.y_lims = y_lims if y_lims else (-float('inf'), float('inf'))
-        self.z_lims = z_lims if z_lims else (-float('inf'), float('inf'))
+                 x_lims: tuple[float|None, float|None] = (None, None),
+                 y_lims: tuple[float|None, float|None] = (None, None),
+                 z_lims: tuple[float|None, float|None] = (None, None)):
+        self.x_lims = (x_lims[0] if x_lims[0] is not None else -float('inf'),
+                       x_lims[1] if x_lims[1] is not None else float('inf'))
+        self.y_lims = (y_lims[0] if y_lims[0] is not None else -float('inf'),
+                       y_lims[1] if y_lims[1] is not None else float('inf'))
+        self.z_lims = (z_lims[0] if z_lims[0] is not None else -float('inf'),
+                       z_lims[1] if z_lims[1] is not None else float('inf'))
 
     def __call__(self, ray_output: RayOutput) -> RayOutput:
         import numpy as np
@@ -154,7 +157,7 @@ class Histogram(RayTransform):
 
     def compute_histogram(self, x_loc: torch.Tensor, y_loc: torch.Tensor) -> dict:
         # store number of rays
-        out = {'n_rays': x_loc.shape[0]}
+        out: dict[str, float | tuple[float, float] | torch.Tensor] = {'n_rays': x_loc.shape[0]}
 
         # if number of rays is zero, create a trivial histogram
         if out['n_rays'] == 0:
@@ -164,7 +167,7 @@ class Histogram(RayTransform):
             return out
 
         # if x_lims is not given, compute histogram with automatic limits
-        if self.x_lims is None:
+        if self.x_lims is None or self.y_lims is None:
             out['histogram'], bin_edges = torch.histogramdd(torch.stack([x_loc, y_loc]).T,
                                                                  bins=(self.n_bins_x, self.n_bins_y))
             out['x_lims'] = (x_loc.min().item(), x_loc.max().item())
@@ -172,8 +175,8 @@ class Histogram(RayTransform):
         else:
             if self.auto_center:
                 # compute center of mass and adapt limits
-                x_com = torch.sum(x_loc) / x_loc.size
-                y_com = torch.sum(y_loc) / y_loc.size
+                x_com = torch.sum(x_loc).item() / x_loc.numel()
+                y_com = torch.sum(y_loc).item() / y_loc.numel()
                 x_lims = (self.x_lims[0] + x_com, self.x_lims[1] + x_com)
                 y_lims = (self.y_lims[0] + y_com, self.y_lims[1] + y_com)
             else:
@@ -222,7 +225,7 @@ class MultiLayer(RayTransform):
     :param transform: Optional :class:`RayTransform` applied to each created layer.
     """
 
-    def __init__(self, dist_layers: list[float | int], copy_directions: bool = True, transform: RayTransform = None):
+    def __init__(self, dist_layers: list[float | int], copy_directions: bool = True, transform: RayTransform | None = None):
         self.dist_layers = dist_layers
         self.copy_directions = copy_directions
         self.transform = transform
