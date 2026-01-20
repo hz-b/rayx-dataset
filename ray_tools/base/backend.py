@@ -270,11 +270,19 @@ class RayBackendLocalRayX(LocalBackendBase):
 
         with h5py.File(h5_path, "r") as h5f:
             rayx = h5f["rayx"]
-            object_names = [n.decode("utf-8") for n in rayx["object_names"][:]]
+            assert rayx is not None
+            assert isinstance(rayx, h5py.Group)
+            rayx_object_names = rayx["object_names"]
+            assert isinstance(rayx_object_names, h5py.Dataset)
+            object_names_data = rayx_object_names[()]
+            object_names = [n.decode("utf-8") if isinstance(n, bytes) else n for n in object_names_data]
             name_to_index = {name: i for i, name in enumerate(object_names)}
 
             events = rayx["events"]
-            obj_id = events["object_id"][:]  # numpy
+            assert isinstance(events, h5py.Group)
+            obj_id_ds = events["object_id"]
+            assert isinstance(obj_id_ds, h5py.Dataset)
+            obj_id = obj_id_ds[()]  # numpy
 
             for plane in exported_planes:
                 # Missing plane -> empty output
@@ -306,7 +314,9 @@ class RayBackendLocalRayX(LocalBackendBase):
                     continue
 
                 def to_torch(col: str) -> torch.Tensor:
-                    arr = events[col][inds].astype(np.float32, copy=False)
+                    arr_col = events[col]
+                    assert isinstance(arr_col, h5py.Dataset)
+                    arr = arr_col[inds].astype(np.float32, copy=False)
                     arr = np.ascontiguousarray(arr)
                     t = torch.from_numpy(arr)
                     return t.to(self.device) if self.device.type != "cpu" else t
