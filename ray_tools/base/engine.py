@@ -4,7 +4,7 @@ import abc
 import torch
 import numpy as np
 from ray_tools.base.rml.transform import apply_rigid_transform
-from collections.abc import Iterable 
+from collections.abc import Iterable, Sequence 
 from collections import OrderedDict
 
 from joblib import Parallel, delayed
@@ -12,7 +12,6 @@ from joblib import Parallel, delayed
 from .raypyng.rml import RMLFile
 from .raypyng.xmltools import XmlElement
 
-from . import RayTransformType
 from .backend import RayBackend, RayOutput
 from .transform import RayTransform
 import threading
@@ -21,7 +20,7 @@ class Engine(abc.ABC):
     @abc.abstractmethod
     def run(self,
             parameters: torch.Tensor,
-            transforms: RayTransformType | Iterable[RayTransformType] | None = None,
+            transform: RayTransform | None = None,
             ) -> list[dict]:
         pass
         
@@ -33,14 +32,14 @@ class RayEngine(Engine):
     :param ray_backend: RayBackend object that actually runs the simulation.
     :param num_workers: Number of parallel workers for runs (multi-threading, NOT multi-processing).
         Use 1 for no single-threading.
-    :param as_generator: If True, :func:`RayEngine.run` returns a generator so that runs are performs when iterating
+    :param as_generator: If True, :func:`RayEngine.run` returns a generator so that runs are performed when iterating
         over it.
     :param verbose:
     """
 
     def __init__(self,
                  rml_basefile: str,
-                 param_list: list[str],
+                 param_limit_dict: OrderedDict[str, tuple[float, float]],
                  exported_planes: list[str],
                  ray_backend: RayBackend,
                  num_workers: int = 1,
@@ -56,21 +55,21 @@ class RayEngine(Engine):
         self.num_workers = num_workers
         self.as_generator = as_generator
         self.verbose = verbose
-        self.param_list = param_list
+        self.param_limit_dict = param_limit_dict
         self.manual_transform_plane = manual_transform_plane
         self.manual_transform_xyz = manual_transform_xyz
         self._thread_local = threading.local()
         
         self.indices = None
         if self.manual_transform_xyz is not None:
-            missing = [p for p in self.manual_transform_xyz if p not in self.param_list]
+            missing = [p for p in self.manual_transform_xyz if p not in self.param_limit_dict.keys()]
 
             if missing:
                 raise ValueError(
                     f"Missing required parameters in param_list: {missing}"
                 )
 
-            self.indices = tuple(self.param_list.index(p) for p in self.manual_transform_xyz)
+            self.indices = tuple(list(self.param_limit_dict.keys()).index(p) for p in self.manual_transform_xyz)
 
         # internal RMLFile object
         self._raypyng_rml = RMLFile(self.rml_basefile)
@@ -84,7 +83,7 @@ class RayEngine(Engine):
     
     def run(self,
             parameters: torch.Tensor,
-            transforms: RayTransformType | Iterable[RayTransformType] | None = None,
+            transform: RayTransform | None = None,
             ) -> list[dict]:
         """
         Runs simulation for given (Iterable of) parameter containers.
@@ -100,10 +99,10 @@ class RayEngine(Engine):
         """
 
         # convert transforms into list if it was a singleton
-        if transforms is None or isinstance(transforms, (RayTransform, dict)):
-            transforms_list = parameters.shape[0] * [transforms]
+        if transform is None or isinstance(transform, (RayTransform, dict)):
+            transforms_list = parameters.shape[0] * [transform]
         else:
-            transforms_list = transforms
+            transforms_list = transform
             
         # Iterable of arguments used for RayEngine._run_func
         _iter = ((run_params, transform) for (run_params, transform) in
@@ -114,12 +113,16 @@ class RayEngine(Engine):
         result = worker(jobs)
         if not isinstance(result, list):
             raise Exception("The result must be a list if we input a list.")
+        # filter out None values and ensure all results are dicts
+        result = [r for r in result if r is not None and isinstance(r, dict)]
+        if len(result) != len(parameters):
+            raise ValueError("Some simulations returned None or invalid results")
         # extract only element if parameters was a singleton
         return result
     
     def _run_func(self,
                   parameters: torch.Tensor,
-                  transform: RayTransformType | None = None,
+                  transform: RayTransform | None = None,
                   ) -> dict:
         """
         Run simulation using parameters tensor and apply_rigid_transform to update
@@ -228,7 +231,7 @@ class RayEngine(Engine):
 
         # --- Build index -> (component, property) mapping -------------------------------
         index_to_comp_prop = {}
-        for i, key in enumerate(self.param_list):
+        for i, key in enumerate(self.param_limit_dict.keys()):
             if isinstance(key, (list, tuple)) and len(key) == 2:
                 comp, prop = key
             else:
@@ -366,27 +369,31 @@ class RayEngine(Engine):
         element = template.__getattr__(component)
         if not isinstance(element, XmlElement):
             raise Exception("Element must be XmlElement.")
-        return element.__getattr__(param)
+        result = element.__getattr__(param)
+        if isinstance(result, list):
+            if not result:
+                raise Exception(f"Parameter {param} returned an empty list.")
+            result = result[0]
+        if not isinstance(result, XmlElement):
+            raise Exception("Parameter must be XmlElement.")
+        return result
 
 class MinMaxRayEngine(RayEngine):
     def __init__(
         self,
         *args,
-        param_limit_dict: OrderedDict[str, tuple[float, float]],
         **kwargs
     ) -> None:
         super().__init__(*args, **kwargs)
 
-        if not isinstance(param_limit_dict, OrderedDict):
+        if not isinstance(self.param_limit_dict, OrderedDict):
             raise TypeError("param_limit_dict must be an OrderedDict")
-
-        self.param_limit_dict = param_limit_dict
 
         # Pre-build tensors for fast vectorized denormalization
         mins = []
         maxs = []
 
-        for name, (min_val, max_val) in param_limit_dict.items():
+        for name, (min_val, max_val) in self.param_limit_dict.items():
             if max_val <= min_val:
                 raise ValueError(f"Invalid limits for '{name}': {min_val}, {max_val}")
             mins.append(min_val)
@@ -424,14 +431,14 @@ class MinMaxRayEngine(RayEngine):
     def run(
         self,
         parameters: torch.Tensor,
-        transforms: RayTransformType | Iterable[RayTransformType] | None = None,
+        transform: RayTransform | None = None,
     ) -> list[dict]:
 
         denorm_params = self.denormalize(parameters)
 
         return super().run(
             denorm_params,
-            transforms=transforms,
+            transform=transform,
         )
 
 class GaussEngine(Engine):
@@ -466,7 +473,7 @@ class GaussEngine(Engine):
     def run(
         self,
         parameters: torch.Tensor,
-        transforms: RayTransformType | list[RayTransformType] | None = None,
+        transform: RayTransform | None = None,
     ) -> list[dict]:
 
         if parameters.ndim != 2:
@@ -478,10 +485,10 @@ class GaussEngine(Engine):
             )
 
         # normalize transforms into list
-        if transforms is None or isinstance(transforms, (RayTransform, dict)):
-            transforms_list = parameters.shape[0] * [transforms]
+        if transform is None or isinstance(transform, (RayTransform, dict)):
+            transforms_list = parameters.shape[0] * [transform]
         else:
-            transforms_list = transforms
+            transforms_list = list(transform)
 
         if len(transforms_list) != parameters.shape[0]:
             raise ValueError("If transforms is a list, it must have length == batch size")
@@ -548,7 +555,10 @@ class GaussEngine(Engine):
             t = transforms_list[b]
             if t is not None:
                 # if dict, expect plane key 'ImagePlane'
-                tt = t if isinstance(t, RayTransform) else t["ImagePlane"]
+                if isinstance(t, RayTransform):
+                    tt = t
+                else:
+                    tt = t["ImagePlane"]
                 ray_out = tt(ray_out)
 
             # build param_container dict (for traceability)
@@ -593,7 +603,7 @@ class SurrogateEngine(Engine):
     def run(
         self,
         parameters: torch.Tensor,
-        transforms: RayTransformType | Iterable[RayTransformType] | None = None,
+        transform: RayTransform | None = None,
     ) -> list[dict]:
 
         if parameters.ndim != 2:
@@ -604,15 +614,6 @@ class SurrogateEngine(Engine):
                 f"Expected {len(self.param_list)} parameters, got {parameters.shape[1]}"
             )
 
-        # normalize transforms into list
-        if transforms is None or isinstance(transforms, (RayTransform, dict)):
-            transforms_list = parameters.shape[0] * [transforms]
-        else:
-            transforms_list = list(transforms)
-
-        if len(transforms_list) != parameters.shape[0]:
-            raise ValueError("If transforms is a list, it must have length == batch size")
-
         params_on_dev = parameters.to(self.device)
 
         outputs: list[dict] = []
@@ -621,13 +622,15 @@ class SurrogateEngine(Engine):
             params_tensor = row.unsqueeze(0)        # [1, n]
 
             # Run surrogate
-            if self.is_vae and self.latent_size is not None:
+            if self.is_vae and self.latent_size is not None and hasattr(self.model, "decode"):
                 draw = torch.normal(
                     mean=torch.zeros(self.latent_size, device=self.device),
                     std=torch.ones(self.latent_size, device=self.device),
                 ).view(1, -1)
 
                 # expected: model.decode(z, params)
+                assert hasattr(self.model, "decode"), "VAE model must have a decode method"
+                assert callable(self.model.decode), "VAE model's decode must be callable"
                 model_out = self.model.decode(draw, params_tensor)
             else:
                 # expected: model(params_tensor, ...)
@@ -650,10 +653,8 @@ class SurrogateEngine(Engine):
             ray_output = {self.output_plane: model_out}
 
             # Apply transforms (if they are RayTransform, they must accept whatever model_out is)
-            t = transforms_list[b]
-            if t is not None:
-                tt = t if isinstance(t, RayTransform) else t[self.output_plane]
-                ray_output[self.output_plane] = tt(ray_output[self.output_plane])
+            if transform is not None:
+                ray_output[self.output_plane] = transform(ray_output[self.output_plane])
 
             outputs.append({
                 "param_container": param_dict,
