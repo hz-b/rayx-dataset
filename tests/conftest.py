@@ -10,7 +10,7 @@ class DummyEngine(Engine):
     def __init__(self, variant:str="simple"):
         self.variant = variant
 
-    def run(self, parameters, transforms=None):
+    def run(self, parameters, transform=None):
         """
         parameters: torch.Tensor [B, P]
         transforms: list length B
@@ -44,14 +44,7 @@ class DummyEngine(Engine):
             out.append(item)
         return out
 
-# ---- reusable sampler factory ----
-def make_sampler(idx_sub=["a"], n_params=2):
-    def sampler_func():
-        # produce a single row of parameters (m==1)
-        return torch.linspace(0.0, 1.0, n_params)
-    return EfficientRandomRayDatasetGenerator.build_parameter_sampler(
-        sampler_func=sampler_func, idx_sub=list(idx_sub), transform=None
-    )
+
 
 @pytest.fixture
 def dummy_engine():
@@ -63,4 +56,6 @@ def dummy_engine_variant():
 
 @pytest.fixture
 def sampler():
-    return make_sampler(idx_sub=["s"], n_params=2)
+    def sampler_func(batch_len):
+        return torch.rand(batch_len, 2)
+    return sampler_func
