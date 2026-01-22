@@ -1,0 +1,56 @@
+# conf/defaults.yaml
+# Framework-level defaults (do not encode experiment specifics here)
+
+# General
+verbose: false
+num_workers: -1
+
+# Backend wiring
+backend_options:
+  rayx:
+    _target_: ray_tools.base.backend.RayBackendLocalRayX
+    seed: ${seed}
+    verbose: ${verbose}
+
+  rayui:
+    _target_: ray_tools.base.backend.RayBackendLocalRayUI
+    seed: ${seed}
+    verbose: ${verbose}
+
+# Transform wiring
+transform_options:
+  xyhist:
+    _target_: ray_tools.base.transform.XYHistogram
+    n_bins: 50
+    x_lims: ${as_tuple:-10, 10}
+    y_lims: ${as_tuple:-2, 2}
+
+# Engine template
+engine:
+  _target_: ray_tools.base.engine.MinMaxRayEngine
+  rml_basefile: ${rml_basefile}
+  param_limit_dict:
+    _target_: generate.ordered_param_limit_dict
+    cfg: ${param_limit_dict}
+  exported_planes: ${exported_planes}
+  ray_backend: null
+  num_workers: ${num_workers}
+  verbose: ${verbose}
+  manual_transform_plane: ${manual_transform_plane}
+  manual_transform_xyz: ${manual_transform_xyz}
+
+# Dataset generator template
+dataset_generator:
+  _target_: ray_tools.simulation.data_tools.EfficientRandomRayDatasetGenerator
+  engine: null
+  sampler: null
+  transform: null
+  h5_datadir: ${outputs_dir}
+  param_limit_dict:
+    _target_: generate.ordered_param_limit_dict
+    cfg: ${param_limit_dict}
+  exported_planes: ${exported_planes}
+  h5_basename: dataset5
+  h5_max_size: 100
+  fixed_output_size: true
+
