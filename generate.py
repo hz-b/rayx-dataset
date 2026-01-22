@@ -21,9 +21,7 @@ except ValueError:
     pass
 
 def _resolve_rml_path(cfg):
-    # Get file_root and rml_basefile from cfg (user.yaml)
-    #print("./rml/METRIX_U41_G1_H1_318eV_PS_MLearn_1.15.rml exist?!", os.path.exists("./rml/METRIX_U41_G1_H1_318eV_PS_MLearn_1.15.rml"))
-    file_root = get_original_cwd()#cfg.get("file_root", "") or ""
+    file_root = get_original_cwd()
     rml_basefile_cfg = cfg.get("rml_basefile", "")
 
     # If rml_basefile is expressed relative to file_root, expand it:
@@ -36,56 +34,24 @@ def _resolve_rml_path(cfg):
     candidate = os.path.expanduser(candidate)
     candidate_abs = os.path.abspath(candidate)
 
-    # If the path exists on disk, convert to file:// URL (some backends expect URL)
-    if os.path.exists(candidate_abs):
-        file_url = pathlib.Path(candidate_abs).as_uri()   # yields file:///...
-        return candidate_abs, file_url
-    else:
-        # If it doesn't exist, still try to interpret as a file:// URL (maybe user supplied one)
-        parsed = urllib.parse.urlparse(candidate_abs)
-        if parsed.scheme:
-            # has a scheme (maybe file:// already) — return as-is
-            return candidate_abs, candidate_abs
-        # not found and no scheme -> raise helpful error
-        raise FileNotFoundError(
-            f"rml_basefile not found at resolved path: {candidate_abs}\n"
-            "Set `file_root` in conf/user.yaml or set `rml_basefile` to a valid absolute path or file:// URL."
-        )
+    return candidate_abs
 
 @hydra.main(config_path="conf", config_name="config", version_base="1.2")
 def main(cfg):
-    #print("Composed config:")
-    #print(OmegaConf.to_yaml(cfg))
-
     # instantiate backend + transform
     backend = instantiate(cfg.backend_options[cfg.selected_backend])
     transform = instantiate(cfg.transform_options[cfg.transform_selected])
 
     # Resolve rml_basefile (path + file:// URL)
     try:
-        rml_path, rml_file_url = _resolve_rml_path(cfg)
+        rml_path = _resolve_rml_path(cfg)
     except FileNotFoundError as e:
         raise RuntimeError(str(e))
 
-    #print("Using rml_basefile (path):", rml_path)
-    #print("Using rml_basefile (file URL):", rml_file_url)
-
     # Instantiate engine while overriding rml_basefile to the absolute path or file URL
     # Try to pass the plain path first (engine might accept it). If that fails, pass file:// URL.
-    try:
-        engine = instantiate(cfg.engine, ray_backend=backend, rml_basefile=rml_path)
-    except Exception as e_path:
-        # try with file:// URL as fallback
-        try:
-            engine = instantiate(cfg.engine, ray_backend=backend, rml_basefile=rml_file_url)
-        except Exception as e_url:
-            # both attempts failed; show both trace info for diagnosis
-            raise RuntimeError(
-                "Failed to instantiate engine with rml_basefile as path and as file:// URL.\n"
-                f"Error with path ({rml_path}): {e_path}\n"
-                f"Error with file URL ({rml_file_url}): {e_url}"
-            )
-
+    engine = instantiate(cfg.engine, ray_backend=backend, rml_basefile=rml_path)
+   
     # sampler runtime function
     def sampler(batch_len):
         return torch.rand(batch_len, len(cfg.param_limit_dict))
@@ -105,7 +71,6 @@ def main(cfg):
     )
 
     gen.generate(h5_idx=cfg.generate.h5_idx, batch_size=cfg.generate.batch_size)
-    print("Done.")
 
 if __name__ == "__main__":
     main()
