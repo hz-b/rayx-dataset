@@ -14,7 +14,7 @@ transform_selected: xyhist
 # -------------------------------------------------------------------
 file_root: "."
 outputs_dir: ${file_root}/outputs
-rml_basefile: ${file_root}/tests/rml/METRIX_U41_G1_H1_318eV_PS_MLearn_1.15.rml
+rml_basefile: ${file_root}/conf/beamline.rml
 
 # -------------------------------------------------------------------
 # ImagePlane configuration (USER OWNED)
