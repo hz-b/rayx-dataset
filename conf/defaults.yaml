@@ -50,5 +50,5 @@ dataset_generator:
     _target_: generate.ordered_param_limit_dict
     cfg: ${param_limit_dict}
   exported_planes: ${exported_planes}
-  h5_basename: dataset5
+  h5_basename: dataset
   h5_max_size: 100
