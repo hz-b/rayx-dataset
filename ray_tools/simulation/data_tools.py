@@ -27,18 +27,7 @@ class EfficientRandomRayDatasetGenerator:
     """
     Generic HDF5 writer for Engine outputs.
 
-    HDF5 layout (variable-length mode):
-
-      /params/values        [N, P]
-      /params/names         [P]
-      /meta/idx_sample      [N]
-      /meta/idx_sub         [N]
-
-      /ray_output/<plane>/<key>/
-          data     [total_rows, cols]
-          offsets  [N+1]
-
-    HDF5 layout (fixed_output_size=True):
+    HDF5 layout
 
       /params/values        [N, P]
       /params/names         [P]
@@ -63,7 +52,6 @@ class EfficientRandomRayDatasetGenerator:
         device: torch.device | None = None,
         params_dtype: np.dtype = np.dtype(np.float32),
         compress: str | None = "lzf",
-        fixed_output_size: bool = False,
     ) -> None:
         self.engine = engine
         self.sampler = sampler
@@ -76,7 +64,6 @@ class EfficientRandomRayDatasetGenerator:
         self.device = device
         self.params_dtype = params_dtype
         self.compress = compress
-        self.fixed_output_size = bool(fixed_output_size)
 
         os.makedirs(self.h5_datadir, exist_ok=True)
 

@@ -52,5 +52,3 @@ dataset_generator:
   exported_planes: ${exported_planes}
   h5_basename: dataset5
   h5_max_size: 100
-  fixed_output_size: true
-
