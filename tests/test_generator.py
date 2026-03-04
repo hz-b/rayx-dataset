@@ -31,7 +31,6 @@ def test_generator_fixed(tmp_path, dummy_engine, sampler):
         exported_planes=["plane1"],
         h5_basename="raw",
         dataset_size=2,
-        fixed_output_size=True,
         transform=XYHistogram(10, (0,10), (0,5)),
     )
 
