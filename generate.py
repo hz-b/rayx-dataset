@@ -63,8 +63,7 @@ def main(cfg):
         param_limit_dict=cfg.param_limit_dict,
         exported_planes=list(cfg.exported_planes),
         h5_basename=cfg.dataset_generator.h5_basename,
-        h5_max_size=cfg.dataset_generator.h5_max_size,
-        fixed_output_size=cfg.dataset_generator.fixed_output_size,
+        dataset_size=cfg.dataset_generator.dataset_size,
     )
 
     gen.generate(h5_idx=cfg.generate.h5_idx, batch_size=cfg.generate.batch_size)

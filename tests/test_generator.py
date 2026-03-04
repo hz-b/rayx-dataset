@@ -30,7 +30,7 @@ def test_generator_fixed(tmp_path, dummy_engine, sampler):
         param_limit_dict=param_limit_dict,
         exported_planes=["plane1"],
         h5_basename="raw",
-        h5_max_size=2,
+        dataset_size=2,
         fixed_output_size=True,
         transform=XYHistogram(10, (0,10), (0,5)),
     )

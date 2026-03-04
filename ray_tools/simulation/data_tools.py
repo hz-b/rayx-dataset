@@ -48,7 +48,7 @@ class EfficientRandomRayDatasetGenerator:
         param_limit_dict: OrderedDict[str, tuple[float, float]],
         exported_planes: list[str],
         h5_basename: str = "raw",
-        h5_max_size: int = 1000,
+        dataset_size: int = 1000,
         device: torch.device | None = None,
         params_dtype: np.dtype = np.dtype(np.float32),
         compress: str | None = "lzf",
@@ -60,7 +60,7 @@ class EfficientRandomRayDatasetGenerator:
         self.param_limit_dict = param_limit_dict
         self.exported_planes = list(exported_planes)
         self.h5_basename = h5_basename
-        self.h5_size = h5_max_size
+        self.dataset_size = dataset_size
         self.device = device
         self.params_dtype = params_dtype
         self.compress = compress
@@ -69,7 +69,7 @@ class EfficientRandomRayDatasetGenerator:
 
     def generate(self, h5_idx: int, batch_size: int = -1) -> None:
         if batch_size == -1:
-            batch_size = self.h5_size
+            batch_size = self.dataset_size
 
         path = os.path.join(self.h5_datadir, f"{self.h5_basename}_{h5_idx}.h5")
 
@@ -83,7 +83,7 @@ class EfficientRandomRayDatasetGenerator:
 
             params_values = params_grp.create_dataset(
                 "values",
-                shape=(self.h5_size, P),
+                shape=(self.dataset_size, P),
                 dtype=self.params_dtype,
                 compression=self.compress,
             )
@@ -113,14 +113,14 @@ class EfficientRandomRayDatasetGenerator:
             idx_total_sample = 0
 
             with tqdm(
-                total=self.h5_size,
+                total=self.dataset_size,
                 desc=f"Writing {os.path.basename(path)}",
                 unit="sample",
                 leave=False
             ) as pbar:
 
-                while idx_total_sample < self.h5_size:
-                    end = min(idx_total_sample + batch_size, self.h5_size)
+                while idx_total_sample < self.dataset_size:
+                    end = min(idx_total_sample + batch_size, self.dataset_size)
 
                     batch_params = self.sampler(end - idx_total_sample)
                     results = self.engine.run(batch_params, self.transform)
@@ -153,7 +153,7 @@ class EfficientRandomRayDatasetGenerator:
                                 else:
                                     dset = pgrp.create_dataset(
                                         key,
-                                        shape=(self.h5_size, *value_np.shape),
+                                        shape=(self.dataset_size, *value_np.shape),
                                         maxshape=(None, *value_np.shape),
                                         dtype=value_np.dtype,
                                         compression=self.compress,
