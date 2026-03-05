@@ -39,6 +39,12 @@ def main(cfg):
     backend = instantiate(cfg.backend_options[cfg.selected_backend])
     transform = instantiate(cfg.transform_options[cfg.transform_selected])
 
+    # ---- Seed torch RNG ----
+    if "seed" in cfg and cfg.seed is not None:
+        torch.manual_seed(cfg.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(cfg.seed)
+
     # Resolve rml_basefile (path + file:// URL)
     try:
         rml_path = _resolve_rml_path(cfg)
